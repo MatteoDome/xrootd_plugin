@@ -25,14 +25,17 @@
 #include <vector>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <libgen.h>
 
+#if 0
 #include "XrdPosix/XrdPosix.hh"
+#endif
 #include "libcvmfs_cache.h"
 #include "hash.h"
 
 using namespace std;  // NOLINT
 
-char *g_directory = "/var/lib/cvmfs/posix-upper/";
+const char *g_directory = "/var/lib/cvmfs/posix-upper/";
 
 struct Object {
   struct cvmcache_hash id;
@@ -76,7 +79,7 @@ map<uint64_t, Listing> listings;
 
 struct cvmcache_context *ctx;
 
-static int null_getpath(struct cvmcache_hash *id, std::string *urlpath) {
+static int null_getpath(struct cvmcache_hash *id, string *urlpath) {
   shash::Digest<20, shash::kSha1> hash_calc(shash::kSha1, id->digest, shash::kSuffixNone);
   string suffix = hash_calc.MakePath();
 
@@ -95,6 +98,22 @@ static int null_create_tmp(Object& partial_object, string *tmp_path) {
     return CVMCACHE_STATUS_BADCOUNT;
   return CVMCACHE_STATUS_OK;
 }
+
+static int null_assert_dir(string *dir_path) {
+  struct stat statbuffer;
+  int rc = stat(dir_path->c_str(), &statbuffer);
+  if (rc < 0 && errno != ENOENT) {
+    return -errno;
+  } else if (rc == 0 && !S_ISDIR(statbuffer.st_mode)) {
+    return -1;
+  } else if (rc == 0 && S_ISDIR(statbuffer.st_mode)){
+    return CVMCACHE_STATUS_OK;
+  }
+  if (mkdir(dir_path->c_str(), 0777))
+    return -errno;
+  return CVMCACHE_STATUS_OK;
+}
+
 
 /**
   * Checks the validity of the hash and reference count associated with the
@@ -205,19 +224,17 @@ static int null_start_txn(
     partial_object.size_data = info->size;
   if (info->description != NULL)
     partial_object.description = string(info->description);
-  // string txn_path = string(g_directory) + "/txn/fetchXXXXXX";
-  // const unsigned txn_path_len = txn_path.length();
-  // char template_path[txn_path_len + 1];
-  // memcpy(template_path, &txn_path[0], txn_path_len);
-  //
-  // partial_object.fd = mkstemp(template_path);
+  string txn_path = string(g_directory) + "/txn/fetchXXXXXX";
+  const unsigned txn_path_len = txn_path.length();
+  char template_path[txn_path_len + 1];
+  memcpy(template_path, &txn_path[0], txn_path_len);
 
-  null_create_tmp(partial_object, &tmp_path);
+  partial_object.fd = mkstemp(template_path);
   if (partial_object.fd < 0)
     return -errno;
   txn.id = *id;
   txn.partial_object = partial_object;
-  txn.path = tmp_path;
+  txn.path = template_path;
   transactions[txn_id] = txn;
   return CVMCACHE_STATUS_OK;
 }
@@ -262,6 +279,12 @@ static int null_commit_txn(uint64_t txn_id) {
   flushed = fsync(txn.partial_object.fd);
   if (flushed < 0)
     return -errno;
+  string tmp_urlpath;
+  null_getpath(&(txn.partial_object.id), &tmp_urlpath);
+  string dir_path(dirname(const_cast<char*>((&tmp_urlpath)->c_str())));
+  int rc = null_assert_dir(&dir_path);
+  if (rc < 0)
+    return rc;
   update_path = rename(txn.path.c_str(), (&urlpath)->c_str());
   if (update_path < 0)
     return -errno;
@@ -428,6 +451,18 @@ int main(int argc, char **argv) {
     cvmcache_options_fini(options);
     return 1;
   }
+
+  string g_str(g_directory);
+  int rc = null_assert_dir(&g_str);
+  if (rc < 0)
+    return rc;
+  g_str += "/txn";
+  rc = null_assert_dir(&g_str);
+  if (rc < 0)
+    return rc;
+
+
+#if 0
   const char *hostpath = cvmcache_options_get(options, "CVMFS_CACHE_XRD_HOST");
   if (hostpath == NULL) {
     printf("CVMFS_CACHE_XRD_HOST missing\n");
@@ -436,6 +471,7 @@ int main(int argc, char **argv) {
   }
   string full_env = string(hostpath) + string(g_directory);
   g_directory = const_cast<char*>(full_env.c_str());
+#endif
 
   cvmcache_spawn_watchdog(NULL);
 
