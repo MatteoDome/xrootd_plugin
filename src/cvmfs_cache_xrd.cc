@@ -133,7 +133,7 @@ static int null_chrefcnt(struct cvmcache_hash *id, int32_t change_by) {
     obj.refcnt = 1;
     storage[h] = obj;
     return CVMCACHE_STATUS_OK;
-
+  }
   Object obj = storage[h];
   if (change_by > 0){
     if ((obj.refcnt + change_by) == 1){
