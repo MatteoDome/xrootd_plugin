@@ -122,11 +122,17 @@ static int null_assert_dir(string *dir_path) {
 static int null_chrefcnt(struct cvmcache_hash *id, int32_t change_by) {
   ComparableHash h(*id);
 
-  if (storage.find(h) == storage.end())
-    return CVMCACHE_STATUS_NOENTRY;
-
   string urlpath;
   null_getpath(id, &urlpath);
+
+  if (storage.find(h) == storage.end()) {
+    Object obj;
+    obj.fd = open(urlpath.c_str(), O_RDONLY);
+    if (obj.fd < 0)
+      return CVMCACHE_STATUS_NOENTRY;
+    obj.refcnt = 1;
+    storage[h] = obj;
+    return CVMCACHE_STATUS_OK;
 
   Object obj = storage[h];
   if (change_by > 0){
@@ -275,19 +281,23 @@ static int null_commit_txn(uint64_t txn_id) {
   TxnInfo txn = transactions[txn_id];
   ComparableHash h(txn.id);
   null_getpath(&(txn.partial_object.id), &urlpath);
-  storage[h] = txn.partial_object;
-  flushed = fsync(txn.partial_object.fd);
+  flushed = close(txn.partial_object.fd);
   if (flushed < 0)
     return -errno;
-  string tmp_urlpath;
-  null_getpath(&(txn.partial_object.id), &tmp_urlpath);
-  string dir_path(dirname(const_cast<char*>((&tmp_urlpath)->c_str())));
+  size_t pos = urlpath.rfind('/');
+  if (pos == string::npos)
+    return -EINVAL;
+  string dir_path = urlpath.substr(0, pos);
   int rc = null_assert_dir(&dir_path);
   if (rc < 0)
     return rc;
   update_path = rename(txn.path.c_str(), (&urlpath)->c_str());
   if (update_path < 0)
     return -errno;
+  txn.partial_object.fd = open((&urlpath)->c_str(), O_RDONLY);
+  if (txn.partial_object.fd <0)
+    return -errno;
+  storage[h] = txn.partial_object;
   transactions.erase(txn_id);
 
   return CVMCACHE_STATUS_OK;
